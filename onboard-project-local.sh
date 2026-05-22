@@ -105,9 +105,18 @@ preflight() {
   # Должны быть root — иначе sudo -u deploy может не сработать корректно.
   [[ "$(id -u)" -eq 0 ]] || die "Запусти от root: sudo bash onboard-project-local.sh ..."
 
-  # Проверяем, что SERVER_HOST заменён с placeholder-значения.
-  [[ "${SERVER_HOST}" == "1.2.3.4" ]] \
-    && die "Замени SERVER_HOST='1.2.3.4' на реальный внешний IP/домен сервера в начале скрипта."
+  # Если SERVER_HOST не задан (оставлен placeholder) — пробуем определить
+  # внешний IP сервера автоматически через несколько публичных сервисов.
+  if [[ "${SERVER_HOST}" == "1.2.3.4" ]]; then
+    log "SERVER_HOST не задан — определяю внешний IP сервера автоматически…"
+    SERVER_HOST="$(curl -sf --max-time 5 https://api.ipify.org \
+               || curl -sf --max-time 5 https://ifconfig.me \
+               || curl -sf --max-time 5 https://icanhazip.com \
+               || true)"
+    [[ -z "${SERVER_HOST}" ]] \
+      && die "Не удалось определить внешний IP. Укажи SERVER_HOST вручную в начале скрипта."
+    log "Определён внешний IP: ${SERVER_HOST}"
+  fi
 
   # Пользователь deploy существует?
   id "${DEPLOY_USER}" >/dev/null 2>&1 \
