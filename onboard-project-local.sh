@@ -73,6 +73,11 @@ DEPLOY_USER="deploy"
 # GitHub Actions сможет достучаться. НЕ 127.0.0.1 — раннер ходит из интернета.
 SERVER_HOST="1.2.3.4"            # ← внешний IP/домен ЭТОГО сервера
 
+# SSH-порт сервера. Если SSH слушает на стандартном порту 22 — оставь пустым,
+# секрет SERVER_PORT не будет создан и workflow возьмёт 22 по умолчанию.
+# Если порт нестандартный (например, 2222) — укажи здесь.
+SERVER_PORT=""                   # ← нестандартный SSH-порт, или "" для 22
+
 # Базовая директория для проектов.
 DEPLOY_BASE="/opt"
 
@@ -99,6 +104,10 @@ as_deploy() { sudo -u "${DEPLOY_USER}" "$@"; }
 preflight() {
   # Должны быть root — иначе sudo -u deploy может не сработать корректно.
   [[ "$(id -u)" -eq 0 ]] || die "Запусти от root: sudo bash onboard-project-local.sh ..."
+
+  # Проверяем, что SERVER_HOST заменён с placeholder-значения.
+  [[ "${SERVER_HOST}" == "1.2.3.4" ]] \
+    && die "Замени SERVER_HOST='1.2.3.4' на реальный внешний IP/домен сервера в начале скрипта."
 
   # Пользователь deploy существует?
   id "${DEPLOY_USER}" >/dev/null 2>&1 \
@@ -210,6 +219,10 @@ EOF
   as_deploy gh secret set SSH_PRIVATE_KEY < "${ACTIONS_KEY}" --repo "${repo}"
   as_deploy gh secret set SERVER_HOST --body "${SERVER_HOST}" --repo "${repo}"
   as_deploy gh secret set SERVER_USER --body "${DEPLOY_USER}" --repo "${repo}"
+  if [[ -n "${SERVER_PORT}" ]]; then
+    as_deploy gh secret set SERVER_PORT --body "${SERVER_PORT}" --repo "${repo}"
+    log "      SERVER_PORT=${SERVER_PORT} сохранён в secrets"
+  fi
 
   if [[ -n "${env_path}" ]]; then
     as_deploy gh secret set ENV_FILE < "${env_path}" --repo "${repo}"
