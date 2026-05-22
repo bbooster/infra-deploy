@@ -113,6 +113,11 @@ set -euo pipefail
 SERVER_USER="deploy"
 SERVER_HOST="1.2.3.4"            # ← IP или домен твоего VPS
 
+# SSH-порт сервера. Если SSH слушает на стандартном порту 22 — оставь пустым,
+# секрет SERVER_PORT не будет создан и workflow возьмёт 22 по умолчанию.
+# Если порт нестандартный (например, 2222) — укажи здесь.
+SERVER_PORT=""                   # ← нестандартный SSH-порт, или "" для 22
+
 # Базовая директория, куда клонируются проекты на сервере.
 # Итоговый путь проекта: ${DEPLOY_BASE}/<имя-репо>
 DEPLOY_BASE="/opt"
@@ -143,6 +148,10 @@ die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 #  Лучше упасть здесь с понятным сообщением, чем оставить полунастроенный репо.
 # ------------------------------------------------------------------------------
 preflight() {
+  # Проверяем, что SERVER_HOST заменён с placeholder-значения.
+  [[ "${SERVER_HOST}" == "1.2.3.4" ]] \
+    && die "Замени SERVER_HOST='1.2.3.4' на реальный IP/домен твоего VPS в начале скрипта."
+
   # gh установлен?
   command -v gh >/dev/null 2>&1 \
     || die "gh CLI не установлен. Установи: https://cli.github.com"
@@ -169,9 +178,11 @@ preflight() {
 
   # SSH до сервера работает? BatchMode=yes запрещает интерактивный пароль —
   # если ключ не настроен, команда сразу вернёт ошибку, а не повиснет на вводе.
+  local ssh_port_opt=()
+  [[ -n "${SERVER_PORT}" ]] && ssh_port_opt=(-p "${SERVER_PORT}")
   ssh -o BatchMode=yes -o ConnectTimeout=10 \
-      "${SERVER_USER}@${SERVER_HOST}" "true" 2>/dev/null \
-    || die "Нет SSH-доступа к ${SERVER_USER}@${SERVER_HOST}. Проверь ключ/хост."
+      "${ssh_port_opt[@]}" "${SERVER_USER}@${SERVER_HOST}" "true" 2>/dev/null \
+    || die "Нет SSH-доступа к ${SERVER_USER}@${SERVER_HOST}${SERVER_PORT:+:${SERVER_PORT}}. Проверь ключ/хост/порт."
 }
 
 # ------------------------------------------------------------------------------
@@ -226,7 +237,7 @@ main() {
   # Переменные $name подставляются ЛОКАЛЬНО до отправки (heredoc без кавычек),
   # поэтому на сервер уходит уже готовый текст с именем проекта.
   log "[1/5] Сервер: генерация deploy key и настройка ~/.ssh/config…"
-  ssh "${SERVER_USER}@${SERVER_HOST}" bash -s <<EOF
+  ssh "${ssh_port_opt[@]}" "${SERVER_USER}@${SERVER_HOST}" bash -s <<EOF
 set -euo pipefail
 cd ~/.ssh
 
@@ -256,7 +267,7 @@ EOF
   # Забираем ПУБЛИЧНУЮ часть deploy key с сервера, чтобы передать её в GitHub.
   log "[2/5] Забираю публичный deploy key с сервера…"
   local deploy_pub
-  deploy_pub="$(ssh "${SERVER_USER}@${SERVER_HOST}" "cat ~/.ssh/deploy_${name}.pub")"
+  deploy_pub="$(ssh "${ssh_port_opt[@]}" "${SERVER_USER}@${SERVER_HOST}" "cat ~/.ssh/deploy_${name}.pub")"
 
   # ==========================================================================
   #  ЧАСТЬ 2. GITHUB: deploy key (read-only)
@@ -283,7 +294,7 @@ EOF
   # Клонируем через АЛИАС github-<name> (а не github.com), чтобы git взял
   # нужный deploy key. Клон делаем только если папки ещё нет (идемпотентно).
   log "[4/5] Сервер: клонирование в ${project_path}…"
-  ssh "${SERVER_USER}@${SERVER_HOST}" bash -s <<EOF
+  ssh "${ssh_port_opt[@]}" "${SERVER_USER}@${SERVER_HOST}" bash -s <<EOF
 set -euo pipefail
 if [[ ! -d "${project_path}/.git" ]]; then
   git clone "git@github-${name}:${repo}.git" "${project_path}"
@@ -303,6 +314,10 @@ EOF
   gh secret set SSH_PRIVATE_KEY < "${ACTIONS_KEY}" --repo "${repo}"
   gh secret set SERVER_HOST --body "${SERVER_HOST}" --repo "${repo}"
   gh secret set SERVER_USER --body "${SERVER_USER}" --repo "${repo}"
+  if [[ -n "${SERVER_PORT}" ]]; then
+    gh secret set SERVER_PORT --body "${SERVER_PORT}" --repo "${repo}"
+    log "      SERVER_PORT=${SERVER_PORT} сохранён в secrets"
+  fi
 
   # .env → секрет ENV_FILE (только если путь передан вторым аргументом).
   # Читаем файл через stdin (< file), чтобы содержимое не светилось в списке
