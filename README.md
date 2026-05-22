@@ -58,6 +58,60 @@ gh repo create owner/infra-deploy --private --source=. --remote=origin --push
 
 ## Порядок (с нуля, всё на одном сервере)
 
+### 0. Новый сервер — получить этот (приватный) репозиторий
+
+Репозиторий `infra-deploy` **приватный**, поэтому на свежем сервере его нельзя
+просто `git clone` — GitHub отдаёт приватные репо только авторизованным. Сначала
+ставим `gh` CLI, логинимся под admin-аккаунтом, и только потом клонируем. Все
+шаги — от `root` (или через `sudo`).
+
+**0.1. Установить gh CLI** (Debian/Ubuntu):
+
+```bash
+(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
+  && sudo mkdir -p -m 755 /etc/apt/keyrings \
+  && wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+  && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+  && sudo apt update && sudo apt install gh -y
+```
+
+Другие ОС — см. https://github.com/cli/cli#installation. Проверка: `gh --version`.
+
+**0.2. Залогиниться под admin-аккаунтом** репозиториев. На сервере браузера нет —
+выбирай вход по одноразовому коду (device flow):
+
+```bash
+gh auth login
+#  ? What account do you want to log into?            GitHub.com
+#  ? Preferred protocol for Git operations?           HTTPS
+#  ? Authenticate Git with your GitHub credentials?   Yes
+#  ? How would you like to authenticate GitHub CLI?   Login with a web browser
+#  → gh покажет one-time код вида XXXX-XXXX. Открой https://github.com/login/device
+#    в браузере на ЛЮБОМ устройстве (ноут/телефон) и введи код.
+```
+
+Аккаунт — тот, у кого есть доступ к приватному `infra-deploy` (admin-аккаунт
+репозиториев). Сразу запроси scope `workflow` — он понадобится дальше:
+`gh auth refresh -s workflow`.
+
+**0.3. Клонировать репозиторий** на сервер:
+
+```bash
+gh repo clone owner/infra-deploy        # замени owner на свой
+cd infra-deploy
+```
+
+Скрипты на месте — переходи к шагу 1.
+
+> Этот вход в `gh` под `root` нужен, чтобы скачать и потом обновлять
+> (`git pull`) сам `infra-deploy`. Онбординг проектов (шаги 2+) использует
+> ОТДЕЛЬНЫЙ вход под пользователем `deploy`. Если решишь убрать root-вход
+> (`gh auth logout`) — учти, что `git pull` приватного `infra-deploy` после
+> этого перестанет работать до повторного `gh auth login`.
+
 ### 1. Сервер — bootstrap (один раз)
 
 На сервере под root:
@@ -97,16 +151,36 @@ sudo bash onboard-project-local.sh owner/proj1 ./proj1.env
 
 ### Управление .env
 
-`.env` **не хранится в git** (он в `.gitignore`). Доставка — через секрет:
+`.env` **не хранится в git** (он в `.gitignore`) — секреты приложения
+(пароли БД, токены API) доставляются на сервер через секрет репозитория
+`ENV_FILE`.
 
-- передаёшь вторым аргументом путь к локальному `.env` → скрипт кладёт его
-  содержимое в секрет репо `ENV_FILE`;
-- при каждом деплое workflow воссоздаёт `/opt/<имя>/.env` на сервере из этого
-  секрета, права `600`, в логи не печатается;
-- обновить `.env` → `sudo -u deploy gh secret set ENV_FILE < proj1.env --repo
-  owner/proj1` → применится при следующем деплое;
-- если второй аргумент не передавать — `ENV_FILE` не трогается, используется
-  `.env`, лежащий в `/opt/<имя>/` вручную (если есть).
+**Кто и как заводит `.env` — порядок для сотрудника и админа:**
+
+1. **Сотрудник** готовит файл `.env` локально по образцу `.env.example`
+   (`cp .env.example proj1.env`, заполнить реальными значениями).
+2. **Сотрудник передаёт `.env` админу по защищённому каналу** — менеджер
+   паролей команды, зашифрованный архив. НЕ открытым текстом в почте/мессенджере
+   и НЕ коммитом в git.
+3. **Только админ** заносит значения в secrets репозитория. У сотрудников нет
+   (и не должно быть) прав на secrets — секрет в репо кладёт тот, кто запускает
+   онбординг.
+4. Способы залить `.env` в секрет `ENV_FILE`:
+   - **при онбординге проекта** — вторым аргументом скрипта:
+     `sudo bash onboard-project-local.sh owner/proj1 ./proj1.env`
+   - **позже / обновить** — напрямую через `gh`:
+     `sudo -u deploy gh secret set ENV_FILE < proj1.env --repo owner/proj1`
+5. При каждом деплое workflow воссоздаёт `/opt/<имя>/.env` на сервере из
+   секрета `ENV_FILE` (права `600`, в логи не печатается).
+6. Если `ENV_FILE` не задавать — секрет не трогается, используется `.env`,
+   лежащий в `/opt/<имя>/` на сервере вручную (если есть).
+
+**Изменение переменной** = админ обновляет секрет `ENV_FILE` (шаг 4) → любой
+push в `main` (или повторный запуск workflow) → новый `.env` приедет при деплое.
+
+> ⚠️ Секрет `ENV_FILE` хранит **всё содержимое** `.env`. Обновлять его нужно
+> целым файлом — `gh secret set` перезаписывает значение, дописать одну
+> переменную нельзя. Держи у админа актуальную копию `proj1.env`.
 
 ### 4. Доступ сотрудникам (отдельно, осознанно)
 
@@ -133,17 +207,40 @@ Settings → Branches → правило на `main`: require PR + 1 approval + 
 `gh secret set SSH_PRIVATE_KEY < ~/.ssh/actions_deploy --repo owner/repo`
 по всем репо (или повторно onboard каждый репо).
 
-**Передача дел** — сменщику нужно: получить admin на репозитории (Transfer
-ownership на остающийся аккаунт), сделать свой `gh auth login`, иметь доступ к
-серверу. Скрипты от смены человека не меняются.
+### Передача дел / смена админа
 
-> ⚠️ **При серверном онбординге твой GitHub-токен хранится на сервере**
-> (`/home/deploy/.config/gh/`). ПЕРЕД УВОЛЬНЕНИЕМ обязательно разлогинься, чтобы
-> не оставить свой токен на проде:
-> ```bash
-> sudo -u deploy gh auth logout
-> ```
-> Сменщик потом выполнит свой `sudo -u deploy gh auth login`.
+Когда уходит человек, у которого были admin-права на репозитории и доступ к
+серверу. Аккаунты **личные, организации нет** — поэтому права передаются
+сменой владельца каждого репозитория. Алгоритм:
+
+1. **Передать владение репозиториями.** По каждому репо (включая `infra-deploy`):
+   Settings → внизу страницы Danger Zone → **Transfer ownership** → указать
+   аккаунт того, кто остаётся. Новый владелец получает admin автоматически.
+   Уходящего после этого можно убрать из Collaborators.
+   > Если позже заведёте организацию — вместо передачи по одному репо
+   > переносите репозитории в неё и отдаёте роль owner. Тогда смена людей —
+   > это изменение членства в организации, а не Transfer каждого репо.
+2. **Новый админ логинится своим `gh`:**
+   - под пользователем `deploy` на сервере (для онбординга):
+     `sudo -u deploy gh auth login` + проверить scope `workflow`
+     (`sudo -u deploy gh auth refresh -s workflow`);
+   - под `root` на сервере (для `git pull` приватного `infra-deploy`):
+     `gh auth login` — см. шаг 0.
+3. **Уходящий разлогинивается со всех мест**, чтобы не оставить токен на проде:
+   ```bash
+   sudo -u deploy gh auth logout      # токен онбординга
+   gh auth logout                     # root-токен для clone infra-deploy
+   ```
+4. **Ротация служебного ключа** (см. ниже) — обязательна, если уходящий имел
+   доступ к серверу и мог видеть приватный `actions_deploy`.
+5. **Сменить доступы к самому серверу** — пароль root, SSH-ключи в
+   `authorized_keys`, учётку в панели хостинга.
+6. Скрипты, workflow и схема деплоя от смены человека НЕ меняются.
+
+> ⚠️ **При серверном онбординге GitHub-токен хранится на сервере**
+> (`/home/deploy/.config/gh/` и, если логинился root — `/root/.config/gh/`).
+> ПЕРЕД УВОЛЬНЕНИЕМ обязательно выполни оба `gh auth logout` из шага 3 —
+> иначе твой токен останется на проде.
 
 ## Диагностика
 
