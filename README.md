@@ -8,10 +8,20 @@
 | Файл | Что делает | Где запускается |
 |---|---|---|
 | `bootstrap-deploy-server.sh` | создаёт пользователя `deploy` и служебный ключ | **на сервере**, один раз |
-| `onboard-project.sh` | подключает один репо к автодеплою | **с рабочей машины**, на каждый репо |
+| `onboard-project-local.sh` | подключает репо к автодеплою, **запуск на сервере** | **на сервере**, на каждый репо |
+| `onboard-project.sh` | то же, но **запуск с рабочей машины** (по SSH) | рабочая машина (альтернатива) |
 | `deploy.yml` | универсальный workflow (путь = имя репо) | коммитится в репо автоматически |
 | `.env.example` | шаблон переменных окружения | копируется под проект |
 | `.gitignore` | защита от коммита секретов | — |
+
+> **Две версии онбординга — выбери одну:**
+> - **`onboard-project-local.sh`** — запускается прямо на сервере. Всё в одном
+>   месте, ничего не переносишь. Подходит, когда сервер один. `gh auth login`
+>   делается на сервере под пользователем `deploy`.
+> - **`onboard-project.sh`** — запускается с рабочей машины, ходит на сервер по
+>   SSH. Удобнее, если серверов несколько. Токен `gh` остаётся на твоём ноуте.
+>
+> Ниже описан серверный вариант (`-local`) как основной для одного сервера.
 
 ## Как опубликовать этот репозиторий
 
@@ -46,45 +56,44 @@ gh repo create owner/infra-deploy --private --source=. --remote=origin --push
 
 Сотрудники SSH к серверу не имеют — деплоит Actions. В gh CLI логинится только тот, кто запускает onboarding (admin репозиториев).
 
-## Порядок (с нуля)
+## Порядок (с нуля, всё на одном сервере)
 
-### 1. Один раз — сервер
+### 1. Сервер — bootstrap (один раз)
 
-```bash
-scp bootstrap-deploy-server.sh user@SERVER:/tmp/
-ssh user@SERVER 'sudo bash /tmp/bootstrap-deploy-server.sh'
-```
-
-Скрипт напечатает приватный служебный ключ. Сохрани его на рабочую машину:
+На сервере под root:
 
 ```bash
-# на рабочей машине
-nano ~/.ssh/actions_deploy      # вставить вывод
-chmod 600 ~/.ssh/actions_deploy
+sudo bash bootstrap-deploy-server.sh
 ```
 
-### 2. Один раз — рабочая машина
+Создаёт пользователя `deploy` и служебный ключ `/home/deploy/.ssh/actions_deploy`.
+Скрипт напечатает приватный ключ — при серверном онбординге его **никуда
+переносить не нужно**, он читается прямо с сервера. (Не вставляй его никуда:
+если он где-то засветился — перегенери, см. «Ротация».)
+
+### 2. Сервер — gh CLI под пользователем deploy (один раз)
 
 ```bash
-gh auth login                   # под admin-аккаунтом репозиториев
-gh auth status                  # убедиться, что в scopes есть 'workflow'
-# если нет:
-gh auth refresh -s workflow
+sudo -u deploy gh auth login          # под admin-аккаунтом репозиториев
+sudo -u deploy gh auth status         # убедиться, что в scopes есть 'workflow'
+sudo -u deploy gh auth refresh -s workflow   # если scope нет
 ```
 
-Отредактируй конфиг в начале `onboard-project.sh`: `SERVER_HOST`, при необходимости `DEPLOY_BASE`.
+> Онбординг-скрипт выполняет `gh` от имени `deploy`, поэтому и логиниться надо
+> под `deploy` — так токен и git-операции живут под одним пользователем.
 
-### 3. На каждый репозиторий
+Отредактируй `SERVER_HOST` в начале `onboard-project-local.sh` — это **внешний**
+IP/домен сервера (раннер GitHub ходит из интернета, не 127.0.0.1).
+
+### 3. На каждый репозиторий (на сервере, от root)
 
 ```bash
-./onboard-project.sh https://github.com/owner/proj1
-./onboard-project.sh owner/proj2          # короткий формат тоже работает
+sudo bash onboard-project-local.sh owner/proj1
+sudo bash onboard-project-local.sh https://github.com/owner/proj2
 
-# с доставкой .env (загрузится в секрет ENV_FILE, воссоздастся на сервере):
-./onboard-project.sh owner/proj1 ./secrets/proj1.env
+# с доставкой .env:
+sudo bash onboard-project-local.sh owner/proj1 ./proj1.env
 ```
-
-Принимает любой формат ссылки (https / ssh / с `.git` / с `/tree/main` / `owner/repo`).
 
 ### Управление .env
 
@@ -94,10 +103,10 @@ gh auth refresh -s workflow
   содержимое в секрет репо `ENV_FILE`;
 - при каждом деплое workflow воссоздаёт `/opt/<имя>/.env` на сервере из этого
   секрета, права `600`, в логи не печатается;
-- обновить `.env` → поменял локальный файл → `gh secret set ENV_FILE < proj1.env
-  --repo owner/proj1` (или повторный onboard) → применится при следующем деплое;
-- если второй аргумент не передавать — `ENV_FILE` не трогается, и на сервере
-  используется `.env`, лежащий там вручную (если есть).
+- обновить `.env` → `sudo -u deploy gh secret set ENV_FILE < proj1.env --repo
+  owner/proj1` → применится при следующем деплое;
+- если второй аргумент не передавать — `ENV_FILE` не трогается, используется
+  `.env`, лежащий в `/opt/<имя>/` вручную (если есть).
 
 ### 4. Доступ сотрудникам (отдельно, осознанно)
 
@@ -125,9 +134,16 @@ Settings → Branches → правило на `main`: require PR + 1 approval + 
 по всем репо (или повторно onboard каждый репо).
 
 **Передача дел** — сменщику нужно: получить admin на репозитории (Transfer
-ownership на остающийся аккаунт), сделать свой `gh auth login`, иметь
-`~/.ssh/actions_deploy` и SSH-доступ к серверу под `deploy`. Скрипты от смены
-человека не меняются.
+ownership на остающийся аккаунт), сделать свой `gh auth login`, иметь доступ к
+серверу. Скрипты от смены человека не меняются.
+
+> ⚠️ **При серверном онбординге твой GitHub-токен хранится на сервере**
+> (`/home/deploy/.config/gh/`). ПЕРЕД УВОЛЬНЕНИЕМ обязательно разлогинься, чтобы
+> не оставить свой токен на проде:
+> ```bash
+> sudo -u deploy gh auth logout
+> ```
+> Сменщик потом выполнит свой `sudo -u deploy gh auth login`.
 
 ## Ограничения / зона развития
 
