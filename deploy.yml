@@ -47,7 +47,7 @@ jobs:
             if [ -n "${ENV_FILE:-}" ]; then
               ( umask 077; printf '%s' "$ENV_FILE" > .env )
             fi
-            docker compose pull
+            docker compose build --pull
             docker compose up -d
         env:
           # github.event.repository.name = короткое имя репо (без owner).
