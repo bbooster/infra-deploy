@@ -1,0 +1,58 @@
+# ==============================================================================
+#  deploy.yml — универсальный workflow автодеплоя
+# ==============================================================================
+#  Этот файл ОДИНАКОВ для всех репозиториев — путь проекта на сервере
+#  вычисляется автоматически из имени репозитория, поэтому ничего править
+#  при копировании не нужно.
+#
+#  Условие: на сервере проект склонирован в /opt/<имя-репо> (так и делает
+#  onboard-project.sh). Если у тебя другая базовая папка — поменяй /opt ниже.
+#
+#  Триггер: любой push в main (включая merge PR) → деплой.
+# ==============================================================================
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+# Не дать двум деплоям пересечься: если пушнули дважды подряд, второй дождётся
+# завершения первого. cancel-in-progress: false — не обрывать уже идущий деплой.
+concurrency:
+  group: deploy-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # Прокидываем имя репо и содержимое .env в окружение скрипта на сервере.
+          envs: REPO_NAME,ENV_FILE
+          script: |
+            set -euo pipefail
+            cd "/opt/${REPO_NAME}"
+            git pull --ff-only
+            # Материализуем .env из секрета ENV_FILE, если он задан.
+            # umask 077 → создаваемый файл сразу получает права 600 (только владелец).
+            # Подоболочка ( ) — чтобы изменённый umask не утёк в остальные команды.
+            # printf '%s' (без \n-трюков) пишет значение как есть.
+            # НЕ печатаем содержимое (никаких cat/echo $ENV_FILE) — иначе утечёт в лог.
+            if [ -n "${ENV_FILE:-}" ]; then
+              ( umask 077; printf '%s' "$ENV_FILE" > .env )
+            fi
+            docker compose pull
+            docker compose up -d
+        env:
+          # github.event.repository.name = короткое имя репо (без owner).
+          # Например для bbooster/proj1 → proj1 → путь /opt/proj1.
+          REPO_NAME: ${{ github.event.repository.name }}
+          # Полное содержимое .env из секрета репозитория. Если секрет не задан —
+          # переменная пустая, шаг записи .env пропускается (см. условие выше),
+          # и используется .env, уже лежащий на сервере (если есть).
+          ENV_FILE: ${{ secrets.ENV_FILE }}
