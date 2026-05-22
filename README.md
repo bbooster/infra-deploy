@@ -139,14 +139,35 @@ sudo -u deploy gh auth refresh -s workflow   # если scope нет
 Отредактируй `SERVER_HOST` в начале `onboard-project-local.sh` — это **внешний**
 IP/домен сервера (раннер GitHub ходит из интернета, не 127.0.0.1).
 
-### 3. На каждый репозиторий (на сервере, от root)
+### 3. Перенос репо сотрудника в организацию
+
+Сотрудники создают репозитории в своих личных аккаунтах — перед онбордингом
+репо нужно перевести в организацию, чтобы он не был привязан к конкретному
+человеку.
+
+**Сотрудник** (текущий owner репо):
+1. Открыть репо → **Settings** → листать вниз → Danger Zone →
+   **Transfer ownership**.
+2. Ввести название организации → ввести имя репо для подтверждения →
+   **I understand, transfer**.
+
+**Admin организации** (если у сотрудника нет owner-роли в орге):
+- Принять входящий transfer: придёт письмо или уведомление на github.com.
+
+После переноса репо живёт по адресу `github.com/org-name/repo-name`.
+Сотрудника нужно добавить обратно как разработчика — это делается на шаге 5.
+
+> Подробнее о переносе и вариантах добавления разработчика —
+> см. «Перенос репо в организацию» в разделе «Эксплуатация».
+
+### 4. На каждый репозиторий (на сервере, от root)
 
 ```bash
-sudo bash onboard-project-local.sh owner/proj1
-sudo bash onboard-project-local.sh https://github.com/owner/proj2
+sudo bash onboard-project-local.sh org-name/proj1
+sudo bash onboard-project-local.sh https://github.com/org-name/proj2
 
 # с доставкой .env:
-sudo bash onboard-project-local.sh owner/proj1 ./proj1.env
+sudo bash onboard-project-local.sh org-name/proj1 ./proj1.env
 ```
 
 ### Управление .env
@@ -194,7 +215,7 @@ push в `main` (или повторный запуск workflow) → новый 
 > целым файлом — `gh secret set` перезаписывает значение, дописать одну
 > переменную нельзя. Держи у админа актуальную копию `proj1.env`.
 
-### 4. Доступ сотрудникам (отдельно, осознанно)
+### 5. Доступ сотрудникам (отдельно, осознанно)
 
 В каждом репо: Settings → Collaborators → добавить по username, роль **Write**.
 Владелец репозиториев — аккаунт того, кто остаётся (не уходящего).
@@ -203,7 +224,7 @@ push в `main` (или повторный запуск workflow) → новый 
 «Эксплуатации»): доступ выдаётся через Teams организации или напрямую в
 Settings → Collaborators and teams → Add people, роль **Write**.
 
-### 5. Защита main (рекомендуется)
+### 6. Защита main (рекомендуется)
 
 Settings → Branches → правило на `main`: require PR + 1 approval + status checks,
 запретить прямой push.
